@@ -1,0 +1,24 @@
+diff --git a/src/awkward/_connect/cuda/_compute.py b/src/awkward/_connect/cuda/_compute.py
+index bf91a21..08666be 100644
+--- a/src/awkward/_connect/cuda/_compute.py
++++ b/src/awkward/_connect/cuda/_compute.py
+@@ -4,6 +4,8 @@ from __future__ import annotations
+ 
+ import functools
+ 
++import numpy as np
++
+ from cuda.compute import (
+     CountingIterator,
+     DiscardIterator,
+@@ -1344,6 +1346,10 @@ def awkward_ListArray_combinations(
+     #      convert from a within-list index to an absolute content index.
+     #      For replacement, subtract pos to undo the stars-and-bars shift.
+     # -------------------------------------------------------------------------
++    # Coerce `length` to a numpy scalar so the fill_pos closure below is
++    # cache-stable: cuda.compute keys plain Python ints by id() (fresh every
++    # call -> JIT rebuild each call), but numpy scalars by dtype+value.
++    length = np.int64(length)
+     def make_pass(k, carry_k):
+         def fill_pos(g):
+             # a) Find source list i via binary search on offsets

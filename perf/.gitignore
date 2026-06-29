@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+# regenerable profiling artifacts (large binaries)
+nsys/
+ncu/
+logs/
+*.sqlite
+*.nsys-rep
+
+# editor lock/autosave files
+\#*\#
+.\#*

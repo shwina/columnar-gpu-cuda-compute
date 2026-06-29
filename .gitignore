@@ -1,0 +1,25 @@
+# External environments / built-from-source dependencies (regenerable; not vendored)
+.venv-*/
+awkward_src/
+# (the one-line awkward fix lives in patches/awkward3-combinations-cache-fix.patch)
+
+# Large input data (downloaded subsets)
+data/
+
+# Generated / regenerable artifacts
+**/__pycache__/
+*.pyc
+*.so
+columnar_gpu/logs/
+columnar_gpu/plots/
+columnar_gpu/tmp_pq/
+perf/nsys/
+perf/ncu/
+perf/logs/
+*.sqlite
+*.nsys-rep
+
+# Editor temp / lock files
+\#*\#
+.\#*
+*~

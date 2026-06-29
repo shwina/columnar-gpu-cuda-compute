@@ -1,0 +1,21 @@
+name: coffeagpu_env05
+channels:
+  - conda-forge
+  - rapidsai
+dependencies:
+  - conda-forge::python
+  - numpy
+  #- coffea
+  #- ndcctools
+  - conda-pack
+  - dill
+  #- xrootd
+  - git
+  - pyyaml
+  #- fsspec-xrootd
+  #- gdb
+  - conda-forge::cupy
+  - rapidsai::cudf
+  #- conda-forge::awkward
+  #- conda-forge::pytorch
+  #- conda-forge::fastparquet
