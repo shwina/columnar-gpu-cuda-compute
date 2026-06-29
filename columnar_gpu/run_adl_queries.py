@@ -1552,8 +1552,9 @@ def query3c_gpu(filepath, makeplot=False):
 def query7c_gpu(filepath, makeplot=False):
     import cuda.compute as cc
     from cuda.compute import segmented_reduce, OpKind
+    from cuda.compute.iterators import PermutationIterator, ZipIterator, TransformIterator
     from math import sqrt, pi as MPI
-    print("\nStarting Q7c code on gpu (cuda.compute segmented_reduce)..")
+    print("\nStarting Q7c code on gpu (cuda.compute segmented_reduce + PermutationIterator)..")
 
     cp.cuda.Device(0).synchronize(); t0 = time.time()
     table = cudf.read_parquet(filepath, columns=[
@@ -1577,21 +1578,28 @@ def query7c_gpu(filepath, makeplot=False):
     pair_off = cp.zeros(J + 1, dtype=cp.int64); cp.cumsum(l_per_jet, out=pair_off[1:])
     P = int(pair_off[-1])
     jet_of_pair = cp.repeat(cp.arange(J, dtype=cp.int64), l_per_jet)
-    local = cp.arange(P, dtype=cp.int64) - pair_off[jet_of_pair]
-    lep_of_pair = off_l[event_of_jet[jet_of_pair]] + local
-    deta = eta_j[jet_of_pair] - eta_l[lep_of_pair]
-    dphi = phi_j[jet_of_pair] - phi_l[lep_of_pair]
-    dphi = (dphi + np.float32(MPI)) % (np.float32(2 * MPI)) - np.float32(MPI)
-    dr = cp.sqrt(deta * deta + dphi * dphi).astype(cp.float32)
+    lep_of_pair = off_l[event_of_jet[jet_of_pair]] + (cp.arange(P, dtype=cp.int64) - pair_off[jet_of_pair])
+
+    # Per-jet min dR over the event's leptons, fused: gather eta/phi via PermutationIterator
+    # and compute dR with a STATELESS op inside the reduce -> no deta/dphi/dr temporaries.
+    def _dr(t) -> np.float32:                 # t = (eta_j, eta_l, phi_j, phi_l), gathered per pair
+        de = t[0] - t[1]; dp = t[2] - t[3]
+        dp = (dp + MPI) % (2.0 * MPI) - MPI
+        return sqrt(de * de + dp * dp)
+    zdr = ZipIterator(PermutationIterator(eta_j, jet_of_pair), PermutationIterator(eta_l, lep_of_pair),
+                      PermutationIterator(phi_j, jet_of_pair), PermutationIterator(phi_l, lep_of_pair))
     dr_min = cp.empty(J, dtype=cp.float32)
-    segmented_reduce(d_in=dr, d_out=dr_min, num_segments=J,
+    segmented_reduce(d_in=TransformIterator(zdr, _dr), d_out=dr_min, num_segments=J,
                      start_offsets_in=pair_off[:-1], end_offsets_in=pair_off[1:],
                      op=OpKind.MINIMUM, h_init=np.array([np.inf], dtype=np.float32),
                      max_segment_size=int(n_lep.max()) if nev else 1)
-    dr_min[l_per_jet == 0] = np.float32(-1.0)
-    contrib = cp.where((pt_j > 30) & (dr_min > 0.4), pt_j, cp.float32(0)).astype(cp.float32)
+    dr_min[l_per_jet == 0] = np.float32(-1.0)   # jets in lepton-less events: excluded
+
+    # Per-event HT, fused: (pt>30 & dR>0.4) cut applied by a STATELESS op inside the sum.
+    def _ht(t) -> np.float32:                 # t = (pt_j, dr_min) per jet
+        return t[0] if (t[0] > 30.0 and t[1] > 0.4) else 0.0
     ht = cp.empty(nev, dtype=cp.float32)
-    segmented_reduce(d_in=contrib, d_out=ht, num_segments=nev,
+    segmented_reduce(d_in=TransformIterator(ZipIterator(pt_j, dr_min), _ht), d_out=ht, num_segments=nev,
                      start_offsets_in=off_j[:-1], end_offsets_in=off_j[1:],
                      op=OpKind.PLUS, h_init=np.array([0], dtype=np.float32),
                      max_segment_size=int(n_jet.max()) if nev else 1)

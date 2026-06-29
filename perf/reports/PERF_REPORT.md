@@ -197,12 +197,14 @@ in `run_adl_queries.py` — run via `bench_driver.py 3c|7c`), which collapses th
 - **Q7** `jets.nearest(leptons)` HT — `nearest` is a per-jet **`segmented_reduce(MINIMUM)`** of
   ΔR over the event's leptons (segments = per-jet lepton counts), then a per-event
   `segmented_reduce(PLUS)` for HT, then `histogram_even`. The 1115-kernel / 2060-sync cross-join
-  collapses to a handful of primitives; compute ~228 → ~30 ms.
+  collapses to a handful of primitives. ΔR is fused into the MIN reduce via a `ZipIterator` of
+  four **`PermutationIterator`s** (gathered η/φ) + a stateless op — no `deta`/`dphi`/`dr`
+  temporaries (see §6); compute ~228 → ~19 ms.
 
 Both are bit-identical to the awkward path and now **beat baseline end-to-end** (1M): Q3
-default 36.5 ms → fused **19.7 ms** vs baseline 29.3 ms (**1.5×**); Q7 default 290 ms → fused
-**91.2 ms** vs baseline 267 ms (**2.9×**). Both are now read-bound (Q3 ~16/19.7 ms, Q7 ~53/91 ms
-is the cudf read), so compute is no longer the bottleneck.
+default 36.5 ms → fused **20.8 ms** vs baseline 29.3 ms (**1.4×**); Q7 default 290 ms → fused
+**84.6 ms** vs baseline 267 ms (**3.2×**). Both are now read-bound (Q3 ~16/20.8 ms, Q7 read+load
+~65/85 ms), so compute is no longer the bottleneck.
 
 **Generalization.** The "structural" ops here map cleanly to cuda.compute: `flatten(x[mask])` →
 `select`; structure-preserving `x[mask]` → `select` + `segmented_reduce`; `nearest`/cross-join →
@@ -222,9 +224,16 @@ histogram fill (38 → 2). The *maximal* zero-temporary fusion of Q3/Q7 needs th
 op. A stateful op works as a *direct* algorithm op (`select` cond, `unary_transform`) but
 **fails inside a `TransformIterator` fed to `segmented_reduce`/`histogram_even`**
 (`NotImplementedError` in type inference; `cudaErrorLaunchFailure` at runtime).
-**Filed: [NVIDIA/cccl#9627](https://github.com/NVIDIA/cccl/issues/9627).** This is the only thing
-between the (working) array-materializing rewrites in §5.4 and zero-temporary fusion; since Q3/Q7
-are now read-bound, the remaining payoff is small.
+**Filed: [NVIDIA/cccl#9627](https://github.com/NVIDIA/cccl/issues/9627).**
+
+**The gather case has a native escape hatch: `PermutationIterator`.** For the common
+gather-then-compute pattern, `PermutationIterator(values, indices)` does the indexing inside the
+iterator, so the transform op stays *stateless* and sidesteps #9627. This unblocks the
+zero-temporary fusions: `histogram_even(PermutationIterator(pt, idx))` (Q3, gather → fill) and a
+`ZipIterator` of `PermutationIterator`s + stateless op feeding `segmented_reduce` (Q7 ΔR, used in
+`query7c_gpu`). Measured Q7 ΔR+reduce compute: **11.0 → 6.4 ms @1M (1.7×)**, bit-identical,
+eliminating the `deta`/`dphi`/`dr` buffers. Since Q3/Q7 are now read-bound the e2e payoff is
+small, but it removes DRAM traffic and is the clean general pattern.
 
 ---
 
@@ -239,6 +248,11 @@ are now read-bound, the remaining payoff is small.
    defer and batch syncs — the main lever for the remaining host-bound queries.
 3. Recognize the §5.4 patterns (`flatten(x[mask])` → `select`, `nearest` → `segmented_reduce`) in
    the CUDA backend so the rewrites apply automatically.
+4. Use **`PermutationIterator`** for the pervasive `_carry`/gather-then-reduce/scan/fill patterns.
+   The stock light queries are dominated by `cupy_take`/`cupy_copy` gather kernels from `_carry`;
+   feeding a `PermutationIterator` straight into the consuming algorithm fuses the gather away
+   (no materialized take). This is a *stock-backend* lever — it would speed up the queries that
+   still lose, not just the hand-tuned rewrites (which already use it; see §6).
 
 **cuda.compute / CCCL**
 4. [#9626](https://github.com/NVIDIA/cccl/issues/9626) — key Python `int`/`float`/`bool` by value
@@ -266,6 +280,6 @@ bash run_sweep.sh base 1M reports/sweep_base_1M.jsonl 1 2 4 5 6 7
 
 Key scripts: `prof_query.py`, `parse_nsys.py`, `summarize.py`, `run_sweep.sh` (profiling);
 `cprofile_query.py`, `micro_cccl_cache.py` (root cause); `fast_queries.py`, `fuse_proto.py`,
-`q3_select_proto.py` (rewrites/fusion); `patch_fills.py`, `verify_cc_fill.py` (histogram wiring);
+`q3_select_proto.py`, `q7_perm_bench.py` (rewrites/fusion); `patch_fills.py`, `verify_cc_fill.py` (histogram wiring);
 `nvtx_suite.py` (generously NVTX-annotated suite for the Nsight Systems GUI). The
 chronological investigation log is in `reports/WORKLOG.md`.

@@ -62,7 +62,7 @@ Speedups in parens are ÷ baseline (>1 = faster than RawKernel).
 | Q4 | 3.3 | 3.0 (1.11×) | 3.0 (1.11×) | — |
 | Q5 | 2028 | 2303 (0.88×) | **34.9 (58×)** | combinations fix |
 | Q6 | 2158 | 3496 (0.62×) | **91.4 (24×)** | combinations fix |
-| Q7 | 96.1 | 99.9 (0.96×) | **6.3 (15×)** | segmented_reduce |
+| Q7 | 96.1 | 99.9 (0.96×) | **4.0 (24×)** | segmented_reduce + perm |
 | Q8 | CRASH | 4640 (ak3-only) | **123.3** | combinations fix |
 
 ### 1M events — compute (ms)
@@ -74,7 +74,7 @@ Speedups in parens are ÷ baseline (>1 = faster than RawKernel).
 | Q4 | 5.1 | 3.6 (1.41×) | 3.6 (1.41×) | — |
 | Q5 | 19949 | 2319 (8.6×) | **59.2 (337×)** | combinations fix |
 | Q6 | 21228 | 4069 (5.2×) | **594 (36×)** | combinations fix |
-| Q7 | 207.4 | 228.1 (0.91×) | **22.1 (9.4×)** | segmented_reduce |
+| Q7 | 207.4 | 228.1 (0.91×) | **19.1 (11×)** | segmented_reduce + perm |
 | Q8 | FAIL | 4793 (ak3-only) | **243** | combinations fix |
 
 ### 10M events — compute (ms) (Q6 non-chunked)
@@ -86,7 +86,7 @@ Speedups in parens are ÷ baseline (>1 = faster than RawKernel).
 | Q4 | 15.3 | 8.5 (1.79×) | 8.5 (1.79×) | — |
 | Q5 | 197335 | 2420 (82×) | **131 (1505×)** | combinations fix |
 | Q6 | 213887 | 8849 (24×) | **5492 (39×)** | combinations fix |
-| Q7 | 1014 | 1088 (0.93×) | **98.6 (10×)** | segmented_reduce |
+| Q7 | 1014 | 1088 (0.93×) | **104 (9.7×)** | segmented_reduce + perm |
 | Q8 | FAIL | 5503 (ak3-only) | **904** | combinations fix |
 
 ## Speedup vs baseline across scales — stock awkward3 → + our work
@@ -96,7 +96,7 @@ Speedups in parens are ÷ baseline (>1 = faster than RawKernel).
 | Q4 | 1.11× | 1.41× | 1.79× (no change — already a segmented reduce) |
 | Q5 | 0.88× → 58× | 8.6× → 337× | 82× → **1505×** |
 | Q6 | 0.62× → 24× | 5.2× → 36× | 24× → 39× |
-| Q7 | 0.96× → 15× | 0.91× → 9.4× | 0.93× → 10× |
+| Q7 | 0.96× → 24× | 0.91× → 11× | 0.93× → 9.7× |
 | Q8 | ak3-only (base crashes) | ak3-only | ak3-only |
 
 Two stories here:
@@ -115,13 +115,13 @@ Two stories here:
 | Q3 | 29.3 | 36.5 (0.80×) | **20.8 (1.4×)** |
 | Q5 | 19994 | 2363 (8.5×) | **103.7 (193×)** |
 | Q6 | 21319 | 4131 (5.2×) | **656.6 (32×)** |
-| Q7 | 267.3 | 290.2 (0.92×) | **87.4 (3.1×)** |
+| Q7 | 267.3 | 290.2 (0.92×) | **84.6 (3.2×)** |
 
 Q1/Q2/Q4 are ~1× across all three configs — dominated by read + fill, which the backend
 doesn't change. GPU-direct cudf reads make read/load comparable across configs (load ~0.2–3 ms
 vs the old pyarrow shim's ~135 ms at 10M for a flat column), so these totals are honest
 end-to-end. With our work, the optimized queries become **read-bound** (Q3 ~16 of 20.8 ms is the
-read; Q7 read+load ~65 of 87 ms) — compute is no longer the bottleneck.
+read; Q7 read+load ~65 of 85 ms) — compute is no longer the bottleneck.
 
 ## Takeaways for the paper
 - **Robustness:** awkward3/cuda.compute runs the full ADL suite (q1–q8) at all scales. The
