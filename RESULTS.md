@@ -44,85 +44,96 @@ bash bench_all.sh <parquet> logs/<out>.txt           # AK_BENCH_READER=shim for 
 
 ## Results — warm GPU **compute** time per query (JIT excluded), RTX 6000 Ada 49GB
 
-speedup = baseline / awkward3 (>1 means cuda.compute faster).
+Three configurations, so both the stock backend and our work are visible:
+- **baseline** — awkward 2.8.11, CuPy RawKernel backend.
+- **stock awkward3** — the upstream cuda.compute backend, unmodified.
+- **+ our work** — awkward3 with our changes: the `ak.combinations` JIT cache-key fix
+  (Q5/Q6/Q8; `patches/`), and the `select` / `segmented_reduce` rewrites for the host-bound
+  queries (Q3→`query3c_gpu`, Q7→`query7c_gpu`). Q1/Q2/Q4 are unchanged from stock.
 
-### 100k events
-| Query | baseline (RawKernel) | awkward3 (cuda.compute) | speedup |
-|---|---|---|---|
-| Q1 | ~0 ms | ~0 ms | — |
-| Q2 | ~0 ms | ~0 ms | — |
-| Q3 | 4.8 ms | 6.9 ms | 0.69× |
-| Q4 | 3.3 ms | 3.0 ms | 1.11× |
-| Q5 | 2028 ms | 34.9 ms | **58.1×** |
-| Q6 | 2158 ms | 91.4 ms | **23.6×** |
-| Q7 | 96.1 ms | 99.9 ms | 0.96× |
-| Q8 | **CRASH** (bad_alloc) | 123.3 ms | awkward3 only |
+Speedups in parens are ÷ baseline (>1 = faster than RawKernel).
 
-### 1M events
-| Query | baseline (RawKernel) | awkward3 (cuda.compute) | speedup |
-|---|---|---|---|
-| Q1 | ~0 ms | ~0 ms | — |
-| Q2 | ~0 ms | ~0 ms | — |
-| Q3 | 9.3 ms | 16.6 ms | 0.56× |
-| Q4 | 5.1 ms | 3.6 ms | 1.41× |
-| Q5 | 19949 ms | 59.2 ms | **337×** |
-| Q6 | 21228 ms | 594.1 ms | **35.7×** |
-| Q7 | 207.4 ms | 228.1 ms | 0.91× |
-| Q8 | **FAIL** (Negative dimensions) | 243.0 ms | awkward3 only |
+### 100k events — compute (ms)
+| Query | baseline | stock awkward3 | + our work | our change |
+|---|--:|--:|--:|---|
+| Q1 | ~0 | ~0 | ~0 | — |
+| Q2 | ~0 | ~0 | ~0 | — |
+| Q3 | 4.8 | 6.9 (0.69×) | **0.33 (14×)** | select |
+| Q4 | 3.3 | 3.0 (1.11×) | 3.0 (1.11×) | — |
+| Q5 | 2028 | 2303 (0.88×) | **34.9 (58×)** | combinations fix |
+| Q6 | 2158 | 3496 (0.62×) | **91.4 (24×)** | combinations fix |
+| Q7 | 96.1 | 99.9 (0.96×) | **6.3 (15×)** | segmented_reduce |
+| Q8 | CRASH | 4640 (ak3-only) | **123.3** | combinations fix |
 
-### 10M events (Q6 non-chunked this run)
-| Query | baseline (RawKernel) | awkward3 (cuda.compute) | speedup |
-|---|---|---|---|
-| Q1 | ~0 ms | ~0 ms | — |
-| Q2 | ~0 ms | ~0 ms | — |
-| Q3 | 44.4 ms | 88.7 ms | 0.50× |
-| Q4 | 15.3 ms | 8.5 ms | 1.79× |
-| Q5 | 197335 ms | 131.1 ms | **1505×** |
-| Q6 | 213887 ms | 5492 ms | **39.0×** |
-| Q7 | 1014 ms | 1088 ms | 0.93× |
-| Q8 | **FAIL** (illegal mem access) | 904.0 ms | awkward3 only |
+### 1M events — compute (ms)
+| Query | baseline | stock awkward3 | + our work | our change |
+|---|--:|--:|--:|---|
+| Q1 | ~0 | ~0 | ~0 | — |
+| Q2 | ~0 | ~0 | ~0 | — |
+| Q3 | 9.3 | 16.6 (0.56×) | **0.43 (22×)** | select |
+| Q4 | 5.1 | 3.6 (1.41×) | 3.6 (1.41×) | — |
+| Q5 | 19949 | 2319 (8.6×) | **59.2 (337×)** | combinations fix |
+| Q6 | 21228 | 4069 (5.2×) | **594 (36×)** | combinations fix |
+| Q7 | 207.4 | 228.1 (0.91×) | **22.1 (9.4×)** | segmented_reduce |
+| Q8 | FAIL | 4793 (ak3-only) | **243** | combinations fix |
 
-## Compute-stage speedup across scales (baseline ÷ awkward3)
+### 10M events — compute (ms) (Q6 non-chunked)
+| Query | baseline | stock awkward3 | + our work | our change |
+|---|--:|--:|--:|---|
+| Q1 | ~0 | ~0 | ~0 | — |
+| Q2 | ~0 | ~0 | ~0 | — |
+| Q3 | 44.4 | 88.7 (0.50×) | **1.07 (41×)** | select |
+| Q4 | 15.3 | 8.5 (1.79×) | 8.5 (1.79×) | — |
+| Q5 | 197335 | 2420 (82×) | **131 (1505×)** | combinations fix |
+| Q6 | 213887 | 8849 (24×) | **5492 (39×)** | combinations fix |
+| Q7 | 1014 | 1088 (0.93×) | **98.6 (10×)** | segmented_reduce |
+| Q8 | FAIL | 5503 (ak3-only) | **904** | combinations fix |
+
+## Speedup vs baseline across scales — stock awkward3 → + our work
 | Query | 100k | 1M | 10M |
 |---|---|---|---|
-| Q3 | 0.69× | 0.56× | 0.50× |
-| Q4 | 1.11× | 1.41× | 1.79× |
-| Q5 | 58.1× | 337× | **1505×** |
-| Q6 | 23.6× | 35.7× | 39.0× |
-| Q7 | 0.96× | 0.91× | 0.93× |
-| Q8 | base CRASH | base FAIL | base FAIL |
+| Q3 | 0.69× → 14× | 0.56× → 22× | 0.50× → 41× |
+| Q4 | 1.11× | 1.41× | 1.79× (no change — already a segmented reduce) |
+| Q5 | 0.88× → 58× | 8.6× → 337× | 82× → **1505×** |
+| Q6 | 0.62× → 24× | 5.2× → 36× | 24× → 39× |
+| Q7 | 0.96× → 15× | 0.91× → 9.4× | 0.93× → 10× |
+| Q8 | ak3-only (base crashes) | ak3-only | ak3-only |
 
-**Q5 is the standout:** cuda.compute compute time is ~flat with scale (34.9 ms → 59 ms →
-131 ms) while the RawKernel backend grows super-linearly (2.03 s → 19.95 s → 197.3 s), so the
-speedup widens 58× → 337× → **1505×**. Q6 holds ~36–39× at 1M/10M (n=3 combinations ⇒ real GPU
-work scales). The combination-heavy wins reflect cuda.compute collapsing hundreds of
-thousands of kernel launches/syncs into ~thousands, plus the JIT cache-key fix.
+Two stories here:
+- **Stock awkward3 already beats baseline on the combinatoric queries at scale** (Q5 8.6×@1M /
+  82×@10M, Q6 5.2× / 24×) — not because its kernels are fast, but because the RawKernel backend
+  explodes into hundreds of thousands of launches/syncs while cuda.compute issues ~thousands.
+  At 100k it's *slower* (its per-call JIT rebuild, ~2.3 s, dominates before baseline gets large).
+- **Our work removes that rebuild** (combinations fix; compute drops to flat-with-scale tens of
+  ms) and **rewrites the two host-bound losers** (Q3/Q7) directly on `select`/`segmented_reduce`,
+  flipping them from 0.5–0.96× to 9–41× over baseline. Q4 is unchanged (already segmented).
 
-## End-to-end with GPU-direct reads — the load stage collapses
+## End-to-end (read + load + compute + fill), 1M events — total ms
 
-Full per-stage breakdown (ms), 1M events. With cudf, the host→device + `ak.Array` conversion
-("load") nearly vanishes; read times are comparable across backends.
+| Query | baseline | stock awkward3 | + our work |
+|---|--:|--:|--:|
+| Q3 | 29.3 | 36.5 (0.80×) | **20.8 (1.4×)** |
+| Q5 | 19994 | 2363 (8.5×) | **103.7 (193×)** |
+| Q6 | 21319 | 4131 (5.2×) | **656.6 (32×)** |
+| Q7 | 267.3 | 290.2 (0.92×) | **87.4 (3.1×)** |
 
-| Query | env | read | load | comp | fill | total | total speedup |
-|---|---|---:|---:|---:|---:|---:|---:|
-| Q5 | baseline | 41.3 | 2.7 | 19949 | 0.9 | 19994 | |
-| Q5 | awkward3 | 40.4 | 3.1 | 59.2 | 1.0 | 103.7 | **193×** |
-| Q6 | baseline | 51.3 | 15.4 | 21228 | 25.0 | 21319 | |
-| Q6 | awkward3 | 38.1 | 2.7 | 594.1 | 21.8 | 656.6 | **32×** |
-| Q7 | baseline | 50.9 | 7.3 | 207.4 | 1.8 | 267.3 | |
-| Q7 | awkward3 | 53.0 | 7.2 | 228.1 | 1.9 | 290.2 | 0.92× |
-
-(Contrast: under the old pyarrow shim the load stage was ~9 ms @1M and **~135 ms @10M** for a
-flat column — cudf cuts it to ~0.2 ms. Full tables via `format_results.py logs/cmp_*.txt`.)
+Q1/Q2/Q4 are ~1× across all three configs — dominated by read + fill, which the backend
+doesn't change. GPU-direct cudf reads make read/load comparable across configs (load ~0.2–3 ms
+vs the old pyarrow shim's ~135 ms at 10M for a flat column), so these totals are honest
+end-to-end. With our work, the optimized queries become **read-bound** (Q3 ~16 of 20.8 ms is the
+read; Q7 read+load ~65 of 87 ms) — compute is no longer the bottleneck.
 
 ## Takeaways for the paper
 - **Robustness:** awkward3/cuda.compute runs the full ADL suite (q1–q8) at all scales. The
   baseline (2.8.11 RawKernel) still fails Q8 everywhere (genuine argmin bug). Q3's old
   failure was a **read-path artifact** and disappears with cudf — report it honestly.
-- **Performance at scale:** combination-heavy queries (Q5 di-muon, Q6 trijet, Q8) are now
-  ~24–1505× faster (post JIT-fix); light/elementwise queries (Q3, Q7) stay ~par (host-bound,
-  see PERF_REPORT — where Q3/Q7 cuda.compute rewrites flip them to faster than baseline). Q4
-  modestly favors cuda.compute and grows with scale.
+- **Stock vs our work:** stock awkward3 already beats baseline on the combinatoric queries at
+  scale (Q5 8.6×@1M/82×@10M, Q6 5.2×/24×) by issuing thousands of kernels instead of the
+  RawKernel backend's hundreds of thousands — but loses on the host-bound light queries (Q3/Q7,
+  0.5–0.96×) and pays a per-call JIT rebuild on combinations (slower than baseline at 100k). Our
+  work removes the rebuild (combinations fix → Q5/Q6/Q8 up to **1505×**) and rewrites Q3/Q7 on
+  `select`/`segmented_reduce` (`query3c_gpu`/`query7c_gpu`) → **9–41×**, flipping every query to
+  faster than baseline. Q4 is unchanged (its hot op is already a segmented reduce, 1.1–1.8×).
 - **GPU-direct reads matter end-to-end:** eliminating the host→device load stage removes a
   large, scale-dependent cost (≈135 ms at 10M for one flat column) that the old shim masked.
 - **Caveats:** warm timings (JIT excluded); single GPU; one run each (no error bars). awkward3

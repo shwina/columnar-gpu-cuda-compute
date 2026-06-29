@@ -187,7 +187,8 @@ Coffea's histogram fill is a 10–15-kernel clip/ravel/bincount chain. `_cc_fill
 
 ### 5.4 cuda.compute-native rewrites of the host-bound losers (Q3, Q7)  → faster than baseline
 The two queries awkward3 was *losing* are expressible directly in cuda.compute primitives
-(`fast_queries.py`), which collapses their kernel/sync soup:
+(prototyped in `fast_queries.py`, and wired into the benchmark as `query3c_gpu`/`query7c_gpu`
+in `run_adl_queries.py` — run via `bench_driver.py 3c|7c`), which collapses their kernel/sync soup:
 
 - **Q3** `flatten(Jet_pt[|Jet_eta|<1])` — flattening discards event structure, so it is pure
   **stream compaction** of the flat `pt` content by the flat `|η|<1` predicate: one

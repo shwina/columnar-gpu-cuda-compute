@@ -1500,6 +1500,114 @@ def query8_cpu(filepath,makeplot=False):
 
 
 ####################################################################################################
+### cuda.compute-native rewrites of the host-bound queries (Q3, Q7) ###
+#
+# These express the query directly in cuda.compute primitives instead of awkward's
+# generic jagged-getitem / cross-join machinery, collapsing the per-op kernel+sync
+# soup. Bit-identical histograms to query3_gpu / query7_gpu; see perf/reports/PERF_REPORT.md.
+# Named with a "c" suffix; run via bench_driver.py 3c / 7c.
+
+def _jagged_buffers(arr):
+    """(offsets int64, content) cupy buffers of a 1-level jagged cuda ak.Array."""
+    lay = arr.layout
+    return cp.asarray(lay.offsets.data).astype(cp.int64), cp.ascontiguousarray(cp.asarray(lay.content.data))
+
+
+# Q3 (cuda.compute): flatten(Jet_pt[|Jet_eta|<1]) is pure stream compaction -> one DeviceSelect.
+def query3c_gpu(filepath, makeplot=False):
+    import cuda.compute as cc
+    from cuda.compute import select
+    from cuda.compute.iterators import CountingIterator
+    print("\nStarting Q3c code on gpu (cuda.compute select)..")
+
+    cp.cuda.Device(0).synchronize(); t0 = time.time()
+    table = cudf.read_parquet(filepath, columns=["Jet_pt", "Jet_eta"])
+    cp.cuda.Device(0).synchronize(); t_after_read = time.time()
+
+    Jet_pt = cudf_to_awkward(table["Jet_pt"]); Jet_eta = cudf_to_awkward(table["Jet_eta"])
+    pt_c = cp.ascontiguousarray(ak.to_cupy(ak.flatten(Jet_pt)).astype(cp.float32))
+    eta_c = cp.ascontiguousarray(ak.to_cupy(ak.flatten(Jet_eta)).astype(cp.float32))
+    cp.cuda.Device(0).synchronize(); t_after_load = time.time()
+
+    N = pt_c.size
+    def keep(i):
+        return np.uint8(1) if abs(eta_c[i]) < np.float32(1.0) else np.uint8(0)
+    idx = cp.empty(N, dtype=cp.int64); nsel = cp.empty(1, dtype=cp.int64)
+    select(d_in=CountingIterator(np.int64(0)), d_out=idx, d_num_selected_out=nsel, cond=keep, num_items=N)
+    fillarr = pt_c[idx[:int(nsel[0])]]
+    cp.cuda.Device(0).synchronize(); t_after_comp = time.time()
+
+    counts = cp.zeros(100, dtype=cp.int32)
+    cc.histogram_even(d_samples=cp.ascontiguousarray(fillarr), d_histogram=counts,
+                      num_output_levels=101, lower_level=np.float32(0.0),
+                      upper_level=np.float32(200.0), num_samples=int(fillarr.size))
+    cp.cuda.Device(0).synchronize(); t_after_fill = time.time()
+
+    dt_lst = get_dt(t0, t_after_read, t_after_load, t_after_comp, t_after_fill)
+    return (counts, ak.Array(fillarr), dt_lst)
+
+
+# Q7 (cuda.compute): jets.nearest(leptons) HT -> per-jet segmented_reduce(MIN) of dR over the
+# event's leptons, then per-event segmented_reduce(PLUS) for HT, then histogram_even.
+def query7c_gpu(filepath, makeplot=False):
+    import cuda.compute as cc
+    from cuda.compute import segmented_reduce, OpKind
+    from math import sqrt, pi as MPI
+    print("\nStarting Q7c code on gpu (cuda.compute segmented_reduce)..")
+
+    cp.cuda.Device(0).synchronize(); t0 = time.time()
+    table = cudf.read_parquet(filepath, columns=[
+        "Jet_pt", "Jet_eta", "Jet_phi", "Electron_eta", "Electron_phi", "Muon_eta", "Muon_phi"])
+    cp.cuda.Device(0).synchronize(); t_after_read = time.time()
+
+    g = cudf_to_awkward
+    off_j, pt_j = _jagged_buffers(g(table["Jet_pt"]));  pt_j = pt_j.astype(cp.float32)
+    _, eta_j = _jagged_buffers(g(table["Jet_eta"]));    eta_j = eta_j.astype(cp.float32)
+    _, phi_j = _jagged_buffers(g(table["Jet_phi"]));    phi_j = phi_j.astype(cp.float32)
+    lep_eta = ak.to_packed(ak.concatenate([g(table["Electron_eta"]), g(table["Muon_eta"])], axis=1))
+    lep_phi = ak.to_packed(ak.concatenate([g(table["Electron_phi"]), g(table["Muon_phi"])], axis=1))
+    off_l, eta_l = _jagged_buffers(lep_eta); eta_l = eta_l.astype(cp.float32)
+    _, phi_l = _jagged_buffers(lep_phi);     phi_l = phi_l.astype(cp.float32)
+    cp.cuda.Device(0).synchronize(); t_after_load = time.time()
+
+    nev = off_j.size - 1; J = pt_j.size
+    n_jet = cp.diff(off_j); n_lep = cp.diff(off_l)
+    event_of_jet = cp.repeat(cp.arange(nev, dtype=cp.int64), n_jet)
+    l_per_jet = n_lep[event_of_jet]
+    pair_off = cp.zeros(J + 1, dtype=cp.int64); cp.cumsum(l_per_jet, out=pair_off[1:])
+    P = int(pair_off[-1])
+    jet_of_pair = cp.repeat(cp.arange(J, dtype=cp.int64), l_per_jet)
+    local = cp.arange(P, dtype=cp.int64) - pair_off[jet_of_pair]
+    lep_of_pair = off_l[event_of_jet[jet_of_pair]] + local
+    deta = eta_j[jet_of_pair] - eta_l[lep_of_pair]
+    dphi = phi_j[jet_of_pair] - phi_l[lep_of_pair]
+    dphi = (dphi + np.float32(MPI)) % (np.float32(2 * MPI)) - np.float32(MPI)
+    dr = cp.sqrt(deta * deta + dphi * dphi).astype(cp.float32)
+    dr_min = cp.empty(J, dtype=cp.float32)
+    segmented_reduce(d_in=dr, d_out=dr_min, num_segments=J,
+                     start_offsets_in=pair_off[:-1], end_offsets_in=pair_off[1:],
+                     op=OpKind.MINIMUM, h_init=np.array([np.inf], dtype=np.float32),
+                     max_segment_size=int(n_lep.max()) if nev else 1)
+    dr_min[l_per_jet == 0] = np.float32(-1.0)
+    contrib = cp.where((pt_j > 30) & (dr_min > 0.4), pt_j, cp.float32(0)).astype(cp.float32)
+    ht = cp.empty(nev, dtype=cp.float32)
+    segmented_reduce(d_in=contrib, d_out=ht, num_segments=nev,
+                     start_offsets_in=off_j[:-1], end_offsets_in=off_j[1:],
+                     op=OpKind.PLUS, h_init=np.array([0], dtype=np.float32),
+                     max_segment_size=int(n_jet.max()) if nev else 1)
+    cp.cuda.Device(0).synchronize(); t_after_comp = time.time()
+
+    counts = cp.zeros(100, dtype=cp.int32)
+    cc.histogram_even(d_samples=cp.ascontiguousarray(ht), d_histogram=counts,
+                      num_output_levels=101, lower_level=np.float32(0.0),
+                      upper_level=np.float32(200.0), num_samples=int(ht.size))
+    cp.cuda.Device(0).synchronize(); t_after_fill = time.time()
+
+    dt_lst = get_dt(t0, t_after_read, t_after_load, t_after_comp, t_after_fill)
+    return (counts, ak.Array(ht), dt_lst)
+
+
+####################################################################################################
 
 
 def main():

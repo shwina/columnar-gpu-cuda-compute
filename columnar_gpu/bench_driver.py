@@ -1,6 +1,6 @@
 """Run a single ADL query (gpu) in isolation, warm, and emit timing as JSON.
 
-Usage: python bench_driver.py <qnum 1-8> <parquet_path> <label>
+Usage: python bench_driver.py <qid: 1-8, or 3c/7c for the cuda.compute rewrites> <parquet_path> <label>
 
 Runs the query once to warm caches (cuda.compute JIT / CuPy RawKernel compile),
 then once timed, and prints a single RESULT_JSON line. Isolating each query in
@@ -11,12 +11,12 @@ import sys, json, io, contextlib
 import run_adl_queries as rq
 
 import os
-qnum = int(sys.argv[1]); filepath = sys.argv[2]; label = sys.argv[3]
-if qnum == 6 and os.environ.get("AK_Q6_CHUNKED"):
+qid = sys.argv[1]; filepath = sys.argv[2]; label = sys.argv[3]   # qid may be "5" or "3c"
+if qid == "6" and os.environ.get("AK_Q6_CHUNKED"):
     fn = rq.query6_gpu_chunked
 else:
-    fn = getattr(rq, f"query{qnum}_gpu")
-res = {"q": qnum, "label": label, "ok": False}
+    fn = getattr(rq, f"query{qid}_gpu")
+res = {"q": qid, "label": label, "ok": False}
 try:
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):   # silence the query's own chatter
