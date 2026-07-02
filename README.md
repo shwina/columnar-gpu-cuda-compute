@@ -21,11 +21,34 @@ backend. GPU: NVIDIA RTX 6000 Ada, CUDA 13.3.
 `.venv-awkward3/`, `.venv-baseline/` (uv venvs), `data/` (parquet subsets), `awkward_src/`
 (built-from-source awkward3 checkout), and generated artifacts (nsys/sqlite/logs/plots).
 
+## Data
+
+The benchmark reads three parquet subsets in `data/`: `pq_subset_{100k,1M,10M}.parquet`
+(100k / 1M / 10M events). They are **not** tracked in git — fetch them with:
+```bash
+BASE=http://uaf-10.t2.ucsd.edu/~kmohrman/large_files_no_backup/for_ak_gpu/Run2012B_SingleMu_compressed_zstdlv3_PPv2-0_PLAIN_subsets
+for f in pq_subset_100k.parquet pq_subset_1M.parquet pq_subset_10M.parquet; do
+  wget -q "$BASE/$f" -P data/
+done
+```
+
+Provenance: **CMS 2012 open data, `Run2012B_SingleMu`** (NanoAOD-style events). The chain that
+produced these files (scripts in `columnar_gpu/`):
+1. Source ROOT `Run2012B_SingleMu.root:Events` (from Lindsey via K. Mohrman).
+2. `extra_gpu_stuff_from_lindsey.py` — `hepconvert.root_to_parquet` → one zstd-lvl3, PLAIN-encoded
+   parquet (`Run2012B_SingleMu_compressed_zstdlv3_PPv2-0_PLAIN.parquet`).
+3. `dump_to_parquet.py` — slices the first N rows into the `pq_subset_{100k,1M,10M}.parquet` subsets.
+
+> The `uaf-10.t2.ucsd.edu/~kmohrman/.../large_files_no_backup/` URL is a scratch host and is not
+> guaranteed to persist. For a durable citation, point at the upstream **CMS 2012
+> `Run2012B_SingleMu`** release on the [CERN Open Data Portal](https://opendata.cern.ch/) (pin a DOI).
+
 ## Reproduce
 
 Prereqs: NVIDIA GPU + CUDA 13.x, `uv`, and the three parquet subsets in `data/`
-(`pq_subset_{100k,1M,10M}.parquet`). All commands run from the repo root unless noted.
-Pin the GPU explicitly — CUDA's default `FASTEST_FIRST` order can select the wrong device:
+(`pq_subset_{100k,1M,10M}.parquet`; see [Data](#data) below). All commands run from the repo
+root unless noted. Pin the GPU explicitly — CUDA's default `FASTEST_FIRST` order can select
+the wrong device:
 ```bash
 export CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=1   # 1 == RTX 6000 Ada here; check yours
 ```
