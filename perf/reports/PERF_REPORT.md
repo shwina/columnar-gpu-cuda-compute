@@ -61,7 +61,7 @@ compute collapses. Q3/Q7 with the §5.4 rewrites move from losing to **1.5×/3.0
 | Q | 100k | 1M | 10M |
 |---|--:|--:|--:|
 | Q3 | 0.69× | 0.56× | 0.50×  (→ faster than baseline with the §5.4 `select` rewrite) |
-| Q4 | 1.11× | 1.41× | 1.79× |
+| Q4 | 1.11× | 1.41× | 1.79×  (→ 4–6× with the §5.4 fused-count + `select` rewrite) |
 | Q5 | 58.1× | 337.2× | **1505×** |
 | Q6 | 23.6× | 35.7× | 39.0× |
 | Q7 | 0.96× | 0.91× | 0.93×  (→ faster with the §5.4 `segmented_reduce` rewrite) |
@@ -69,8 +69,10 @@ compute collapses. Q3/Q7 with the §5.4 rewrites move from losing to **1.5×/3.0
 
 Q5 compute is **flat with scale** (34.9 → 59.2 → 131 ms) while the baseline grows super-linearly
 (2.03 → 19.95 → 197.3 s), so its speedup widens to 1505× at 10M. Q4 is the one light query that
-*wins and scales* — its hot op (`sum(pt>40, axis=1)`) is a segmented reduce, which cuda.compute
-does well; the rest (Q3/Q7) stay host-bound and ~par until rewritten.
+*wins* in stock form — its hot op (`sum(pt>40, axis=1)`) is a segmented reduce, which cuda.compute
+does well; the rest (Q3/Q7) stay host-bound and ~par until rewritten. Q4 still improves further
+(1.1–1.8× → 4–6×) once the `pt>40` cut is fused into the count and the `>=2` selection into a single
+`select` (§5.4, `query4c_gpu`), removing the boolean-materialize + cupy gather around the reduce.
 
 ### 2.3 Robustness
 

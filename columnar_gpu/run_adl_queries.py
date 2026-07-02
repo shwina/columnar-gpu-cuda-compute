@@ -1615,6 +1615,55 @@ def query7c_gpu(filepath, makeplot=False):
     return (counts, ak.Array(ht), dt_lst)
 
 
+# Q4 (cuda.compute): MET of events with >=2 jets pt>40. Fuse the pt>40 cut into a
+# per-event segmented count (no materialized boolean array), then one DeviceSelect
+# over event indices with count>=2 (replaces the >=2 ufunc + cupy boolean-index).
+# Bit-identical histogram to query4_gpu; run via bench_driver.py 4c.
+def query4c_gpu(filepath, makeplot=False):
+    import cuda.compute as cc
+    from cuda.compute import OpKind, segmented_reduce, select
+    from cuda.compute.iterators import CountingIterator, TransformIterator
+    print("\nStarting Q4c code on gpu (cuda.compute segmented_reduce + select)..")
+
+    cp.cuda.Device(0).synchronize(); t0 = time.time()
+    table = cudf.read_parquet(filepath, columns=["Jet_pt", "MET_pt"])
+    cp.cuda.Device(0).synchronize(); t_after_read = time.time()
+
+    off_j, pt_j = _jagged_buffers(cudf_to_awkward(table["Jet_pt"])); pt_j = pt_j.astype(cp.float32)
+    met = cp.ascontiguousarray(ak.to_cupy(cudf_to_awkward(table["MET_pt"])).astype(cp.float32))
+    cp.cuda.Device(0).synchronize(); t_after_load = time.time()
+
+    nev = off_j.size - 1
+
+    # Per-event count of jets with pt>40, fused: the cut is a STATELESS op inside
+    # the segmented sum, so no boolean array is materialized.
+    def _pass(x) -> np.int32:
+        return np.int32(1) if x > np.float32(40.0) else np.int32(0)
+    njet = cp.empty(nev, dtype=cp.int32)
+    segmented_reduce(d_in=TransformIterator(pt_j, _pass), d_out=njet, num_segments=nev,
+                     start_offsets_in=off_j[:-1], end_offsets_in=off_j[1:],
+                     op=OpKind.PLUS, h_init=np.array([0], dtype=np.int32),
+                     max_segment_size=int(cp.diff(off_j).max()) if nev else 1)
+
+    # Select event indices with >=2 such jets (one DeviceSelect), then gather MET.
+    def _keep(i) -> np.uint8:
+        return np.uint8(1) if njet[i] >= 2 else np.uint8(0)
+    idx = cp.empty(nev, dtype=cp.int64); nsel = cp.empty(1, dtype=cp.int64)
+    select(d_in=CountingIterator(np.int64(0)), d_out=idx, d_num_selected_out=nsel,
+           cond=_keep, num_items=nev)
+    fillarr = met[idx[:int(nsel[0])]]
+    cp.cuda.Device(0).synchronize(); t_after_comp = time.time()
+
+    counts = cp.zeros(100, dtype=cp.int32)
+    cc.histogram_even(d_samples=cp.ascontiguousarray(fillarr), d_histogram=counts,
+                      num_output_levels=101, lower_level=np.float32(0.0),
+                      upper_level=np.float32(200.0), num_samples=int(fillarr.size))
+    cp.cuda.Device(0).synchronize(); t_after_fill = time.time()
+
+    dt_lst = get_dt(t0, t_after_read, t_after_load, t_after_comp, t_after_fill)
+    return (counts, ak.Array(fillarr), dt_lst)
+
+
 ####################################################################################################
 
 

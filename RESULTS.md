@@ -49,7 +49,7 @@ Three configurations, so both the stock backend and our work are visible:
 - **stock awkward3** — the upstream cuda.compute backend, unmodified.
 - **+ our work** — awkward3 with our changes: the `ak.combinations` JIT cache-key fix
   (Q5/Q6/Q8; `patches/`), and the `select` / `segmented_reduce` rewrites for the host-bound
-  queries (Q3→`query3c_gpu`, Q7→`query7c_gpu`). Q1/Q2/Q4 are unchanged from stock.
+  queries (Q3→`query3c_gpu`, Q4→`query4c_gpu`, Q7→`query7c_gpu`). Q1/Q2 are unchanged from stock.
 
 Speedups in parens are ÷ baseline (>1 = faster than RawKernel).
 
@@ -59,7 +59,7 @@ Speedups in parens are ÷ baseline (>1 = faster than RawKernel).
 | Q1 | ~0 | ~0 | ~0 | — |
 | Q2 | ~0 | ~0 | ~0 | — |
 | Q3 | 4.8 | 6.9 (0.69×) | **0.33 (14×)** | select |
-| Q4 | 3.3 | 3.0 (1.11×) | 3.0 (1.11×) | — |
+| Q4 | 3.3 | 3.0 (1.11×) | **0.57 (5.8×)** | segmented_reduce + select |
 | Q5 | 2028 | 2303 (0.88×) | **34.9 (58×)** | combinations fix |
 | Q6 | 2158 | 3496 (0.62×) | **91.4 (24×)** | combinations fix |
 | Q7 | 96.1 | 99.9 (0.96×) | **4.0 (24×)** | segmented_reduce + perm |
@@ -71,7 +71,7 @@ Speedups in parens are ÷ baseline (>1 = faster than RawKernel).
 | Q1 | ~0 | ~0 | ~0 | — |
 | Q2 | ~0 | ~0 | ~0 | — |
 | Q3 | 9.3 | 16.6 (0.56×) | **0.43 (22×)** | select |
-| Q4 | 5.1 | 3.6 (1.41×) | 3.6 (1.41×) | — |
+| Q4 | 5.1 | 3.6 (1.41×) | **0.98 (5.2×)** | segmented_reduce + select |
 | Q5 | 19949 | 2319 (8.6×) | **59.2 (337×)** | combinations fix |
 | Q6 | 21228 | 4069 (5.2×) | **594 (36×)** | combinations fix |
 | Q7 | 207.4 | 228.1 (0.91×) | **19.1 (11×)** | segmented_reduce + perm |
@@ -83,7 +83,7 @@ Speedups in parens are ÷ baseline (>1 = faster than RawKernel).
 | Q1 | ~0 | ~0 | ~0 | — |
 | Q2 | ~0 | ~0 | ~0 | — |
 | Q3 | 44.4 | 88.7 (0.50×) | **1.07 (41×)** | select |
-| Q4 | 15.3 | 8.5 (1.79×) | 8.5 (1.79×) | — |
+| Q4 | 15.3 | 8.5 (1.79×) | **3.8 (4.0×)** | segmented_reduce + select |
 | Q5 | 197335 | 2420 (82×) | **131 (1505×)** | combinations fix |
 | Q6 | 213887 | 8849 (24×) | **5492 (39×)** | combinations fix |
 | Q7 | 1014 | 1088 (0.93×) | **104 (9.7×)** | segmented_reduce + perm |
@@ -93,7 +93,7 @@ Speedups in parens are ÷ baseline (>1 = faster than RawKernel).
 | Query | 100k | 1M | 10M |
 |---|---|---|---|
 | Q3 | 0.69× → 14× | 0.56× → 22× | 0.50× → 41× |
-| Q4 | 1.11× | 1.41× | 1.79× (no change — already a segmented reduce) |
+| Q4 | 1.11× → 5.8× | 1.41× → 5.2× | 1.79× → 4.0× |
 | Q5 | 0.88× → 58× | 8.6× → 337× | 82× → **1505×** |
 | Q6 | 0.62× → 24× | 5.2× → 36× | 24× → 39× |
 | Q7 | 0.96× → 24× | 0.91× → 11× | 0.93× → 9.7× |
@@ -106,7 +106,9 @@ Two stories here:
   At 100k it's *slower* (its per-call JIT rebuild, ~2.3 s, dominates before baseline gets large).
 - **Our work removes that rebuild** (combinations fix; compute drops to flat-with-scale tens of
   ms) and **rewrites the two host-bound losers** (Q3/Q7) directly on `select`/`segmented_reduce`,
-  flipping them from 0.5–0.96× to 9–41× over baseline. Q4 is unchanged (already segmented).
+  flipping them from 0.5–0.96× to 9–41× over baseline. Q4's hot op was already a segmented reduce
+  (1.1–1.8×), but fusing the pt>40 cut into the count and the selection into one DeviceSelect
+  (`query4c_gpu`) removes the boolean-materialize/gather overhead → **4–6×**.
 
 ## End-to-end (read + load + compute + fill), 1M events — total ms
 
@@ -131,9 +133,9 @@ read; Q7 read+load ~65 of 85 ms) — compute is no longer the bottleneck.
   scale (Q5 8.6×@1M/82×@10M, Q6 5.2×/24×) by issuing thousands of kernels instead of the
   RawKernel backend's hundreds of thousands — but loses on the host-bound light queries (Q3/Q7,
   0.5–0.96×) and pays a per-call JIT rebuild on combinations (slower than baseline at 100k). Our
-  work removes the rebuild (combinations fix → Q5/Q6/Q8 up to **1505×**) and rewrites Q3/Q7 on
-  `select`/`segmented_reduce` (`query3c_gpu`/`query7c_gpu`) → **9–41×**, flipping every query to
-  faster than baseline. Q4 is unchanged (its hot op is already a segmented reduce, 1.1–1.8×).
+  work removes the rebuild (combinations fix → Q5/Q6/Q8 up to **1505×**) and rewrites the
+  host-bound queries on `select`/`segmented_reduce` (`query3c_gpu`/`query4c_gpu`/`query7c_gpu`) →
+  Q3 **9–41×**, Q7 **9.7–25×**, Q4 **4–6×** (stock 1.1–1.8×) — every query now faster than baseline.
 - **GPU-direct reads matter end-to-end:** eliminating the host→device load stage removes a
   large, scale-dependent cost (≈135 ms at 10M for one flat column) that the old shim masked.
 - **Caveats:** warm timings (JIT excluded); single GPU; one run each (no error bars). awkward3
