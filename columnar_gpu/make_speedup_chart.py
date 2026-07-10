@@ -32,7 +32,9 @@ def load(scale):
             line = line.strip()
             if line.startswith("{"):
                 d = json.loads(line)
-                rows.setdefault(d["q"], {})[d["label"]] = d
+                q = d["q"]
+                q = int(q) if isinstance(q, str) and q.isdigit() else q   # bench_driver emits str
+                rows.setdefault(q, {})[d["label"]] = d
     return rows
 
 data = {s: load(s) for s in SCALES}

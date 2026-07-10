@@ -16,7 +16,7 @@ if qid == "6" and os.environ.get("AK_Q6_CHUNKED"):
     fn = rq.query6_gpu_chunked
 else:
     fn = getattr(rq, f"query{qid}_gpu")
-res = {"q": qid, "label": label, "ok": False}
+res = {"q": int(qid) if qid.isdigit() else qid, "label": label, "ok": False}   # int for 1-8, str for "3c"
 try:
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):   # silence the query's own chatter

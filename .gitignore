@@ -18,6 +18,8 @@ perf/ncu/
 perf/logs/
 *.sqlite
 *.nsys-rep
+*.log
+reproduce_adl.log
 
 # Editor temp / lock files
 \#*\#

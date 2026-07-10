@@ -4,9 +4,10 @@
 set -u
 cd /home/coder/columnar_gpu_bench/columnar_gpu
 export PYTHONPATH=/home/coder/columnar_gpu_bench/columnar_gpu
-# CUDA default order is FASTEST_FIRST, which makes device 1 the T400(4GB). Force
-# PCI order so CUDA_VISIBLE_DEVICES=1 == nvidia-smi index 1 == RTX 6000 Ada (49GB).
+# Force PCI order so CUDA_VISIBLE_DEVICES matches nvidia-smi indices. The caller
+# picks the GPU via CUDA_VISIBLE_DEVICES (default 0); nothing is hard-coded.
 export CUDA_DEVICE_ORDER=PCI_BUS_ID
+export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 # Read path: cudf GPU-direct in BOTH envs (cudf force-installed alongside cuda.compute and
 # the 2.8.11 RawKernel backend; see cudf_inject_overrides.txt). Set AK_BENCH_READER=shim
 # for the old pyarrow CPU path.
@@ -17,7 +18,7 @@ OUT="${2:-logs/cmp_100k.txt}"
 
 run_env () {  # $1=label  $2=venv
   for q in 1 2 3 4 5 6 7 8; do
-    line=$(timeout 900 env CUDA_VISIBLE_DEVICES=1 AK_BENCH_READER="$AK_BENCH_READER" "$2/bin/python" bench_driver.py "$q" "$DATA" "$1" 2>/dev/null | grep RESULT_JSON)
+    line=$(timeout 900 env AK_BENCH_READER="$AK_BENCH_READER" "$2/bin/python" bench_driver.py "$q" "$DATA" "$1" 2>/dev/null | grep RESULT_JSON)
     if [ -z "$line" ]; then
       echo "{\"q\": $q, \"label\": \"$1\", \"ok\": false, \"error\": \"process crashed (no result)\"}" | tee -a "$OUT"
     else
